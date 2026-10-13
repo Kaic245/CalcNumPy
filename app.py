@@ -273,30 +273,70 @@ def simular_operacao(x, y, op, n, metodo, tipo, armazenar_entradas):
             "y_maq": y_maq, "bruto": bruto, "aprox": aprox, "ea": ea, "er": er}
 
 
-def simular_soma_sequencial(parcela, quantidade, n, metodo, tipo, armazenar_parcela):
-    """Soma `parcela` `quantidade` vezes, ajustando a soma a cada passo (Exemplo 3).
+def simular_operacao_sequencial(valor_base, termo, op, quantidade, n, metodo, tipo, armazenar_operandos):
+    """Executa `op` com `termo` repetidamente `quantidade` vezes a partir de `valor_base`.
 
-    Segue o enunciado: a primeira soma é parcela + parcela (a parcela entra
-    "cheia", sem ajuste) e, depois de cada soma, o resultado é ajustado.
-    Com `armazenar_parcela=True` a parcela também é guardada com n dígitos antes
-    de somar (variante "máquina real").
+    Exemplo (+, termo=p, base=None): soma termo quantidade vezes (Exemplo 3).
+    A cada iteração, calcula a operação exata acumulada e a operação da máquina com n dígitos.
     """
-    p_usada = ajustar_precisao(parcela, n, metodo, tipo) if armazenar_parcela else parcela
-    soma = p_usada                       # 1º termo
+    v_base = termo if valor_base is None else valor_base
+    termo_usado = ajustar_precisao(termo, n, metodo, tipo) if armazenar_operandos else termo
+    acumulado = ajustar_precisao(v_base, n, metodo, tipo) if armazenar_operandos else v_base
+    exato_acumulado = v_base
+
     passos = []
-    for k in range(2, quantidade + 1):   # k = quantos termos já foram somados
-        bruto = CTX_EXATO.add(soma, p_usada)
+    inicio_k = 2 if valor_base is None else 1
+    total_iteracoes = quantidade if valor_base is None else quantidade
+
+    for k in range(inicio_k, total_iteracoes + 1):
+        passo_num = k - 1 if valor_base is None else k
+
+        if op == "/" and termo_usado == 0:
+            raise ErroSimulador("Divisão por zero: o termo repetido virou 0 na máquina.")
+
+        exato_acumulado = operar(exato_acumulado, termo, op)
+        bruto = operar(acumulado, termo_usado, op)
         novo = ajustar_precisao(bruto, n, metodo, tipo)
-        exato_parcial = CTX_EXATO.multiply(parcela, Decimal(k))
-        passos.append({"passo": k - 1, "soma_anterior": soma, "parcela": p_usada,
-                       "bruto": bruto, "apos": novo, "exato_parcial": exato_parcial,
-                       "erro": erro_absoluto(exato_parcial, novo)})
-        soma = novo
-    exato = CTX_EXATO.multiply(parcela, Decimal(quantidade))
-    ea = erro_absoluto(exato, soma)
-    return {"passos": passos, "exato": exato, "final": soma, "ea": ea,
-            "er": erro_relativo(ea, soma), "p_usada": p_usada, "n": n,
-            "metodo": metodo, "tipo": tipo}
+        passos.append({
+            "passo": passo_num,
+            "anterior": acumulado,
+            "termo": termo_usado,
+            "op": op,
+            "bruto": bruto,
+            "apos": novo,
+            "exato_parcial": exato_acumulado,
+            "erro": erro_absoluto(exato_acumulado, novo)
+        })
+        acumulado = novo
+
+    ea = erro_absoluto(exato_acumulado, acumulado)
+    return {
+        "passos": passos,
+        "exato": exato_acumulado,
+        "final": acumulado,
+        "ea": ea,
+        "er": erro_relativo(ea, acumulado),
+        "termo_usado": termo_usado,
+        "base_usada": v_base,
+        "op": op,
+        "quantidade": quantidade,
+        "n": n,
+        "metodo": metodo,
+        "tipo": tipo,
+        "armazenar": armazenar_operandos,
+        "tipo_resultado": "sequencial"
+    }
+
+
+def simular_soma_sequencial(parcela, quantidade, n, metodo, tipo, armazenar_parcela):
+    """Compatibilidade com o Exemplo 3 do PDF: soma `parcela` `quantidade` vezes."""
+    res = simular_operacao_sequencial(None, parcela, "+", quantidade, n, metodo, tipo, armazenar_parcela)
+    # Compatibilidade de chaves para código existente do Exemplo 3
+    for p in res["passos"]:
+        p["soma_anterior"] = p["anterior"]
+        p["parcela"] = p["termo"]
+    res["p_usada"] = res["termo_usado"]
+    return res
 
 
 def digitos_perdidos_por_cancelamento(r):
@@ -413,9 +453,21 @@ def notacao_normalizada(valor, n=None, sig_max=30):
 # st.session_state. Cada visitante do site (QR code) tem a sua própria sessão.
 
 PADROES_ESTADO = {
-    # Calculadora livre (padrão = Exemplo 2 do PDF, o mais didático)
+    # Modo da calculadora livre ("basica" ou "sequencial")
+    "modo_calculadora": "basica",
+    # Calculadora livre - Básica (padrão = Exemplo 2 do PDF)
     "x_txt": "0.76545", "op": "-", "y_txt": "0.76541", "n_dig": 4,
     "metodo": "arredondamento", "tipo_ajuste": "significativos", "modo_calc": "entradas",
+    # Calculadora livre - Sequencial (repetição n vezes)
+    "seq_modo_entrada": "parcela_pura",
+    "seq_base_txt": "1.0",
+    "seq_termo_txt": "0.56786",
+    "seq_op": "+",
+    "seq_qtd": 10,
+    "seq_n_dig": 4,
+    "seq_metodo": "truncamento",
+    "seq_tipo_ajuste": "decimais",
+    "seq_armazenar": False,
     # Resultado atual, histórico e controle de saída
     "resultado": None, "historico": [], "contador": 0, "encerrado": False,
     # Casos de demonstração (valores do PDF, mas editáveis)
@@ -430,10 +482,11 @@ for _chave, _valor in PADROES_ESTADO.items():
 
 
 def novo_calculo():
-    """Callback do botão 'Novo cálculo': limpa X, Y e o resultado (mantém as
-    opções n, método e tipo de ajuste, que normalmente se repetem)."""
+    """Callback do botão 'Novo cálculo': limpa os campos de valores e o resultado."""
     st.session_state["x_txt"] = ""
     st.session_state["y_txt"] = ""
+    st.session_state["seq_base_txt"] = ""
+    st.session_state["seq_termo_txt"] = ""
     st.session_state["resultado"] = None
 
 
@@ -455,8 +508,9 @@ def voltar():
 def enviar_para_calculadora(x_txt, op, y_txt, n, metodo, tipo, modo):
     """Callback dos botões 'Enviar para a calculadora livre' (aba de demonstração):
     copia os valores do exemplo para os campos da calculadora."""
-    novos = {"x_txt": x_txt, "op": op, "y_txt": y_txt, "n_dig": int(n), "metodo": metodo,
-             "tipo_ajuste": tipo, "modo_calc": modo, "resultado": None}
+    novos = {"modo_calculadora": "basica", "x_txt": x_txt, "op": op, "y_txt": y_txt,
+             "n_dig": int(n), "metodo": metodo, "tipo_ajuste": tipo, "modo_calc": modo,
+             "resultado": None}
     for chave, valor in novos.items():
         st.session_state[chave] = valor
     st.session_state["aviso_envio"] = (
@@ -467,18 +521,36 @@ def enviar_para_calculadora(x_txt, op, y_txt, n, metodo, tipo, modo):
 def registrar_historico(r):
     """Guarda o cálculo no histórico da sessão (só textos, bem leve)."""
     st.session_state["contador"] += 1
-    linha = {
-        "#": st.session_state["contador"],
-        "Operação": f"{formatar(r['x'], 20)} {SIMBOLOS[r['op']]} {formatar(r['y'], 20)}",
-        "n": r["n"],
-        "Método": r["metodo"],
-        "Ajuste": TIPO_CURTO[r["tipo"]],
-        "Modo": MODO_CURTO["entradas" if r["armazenar"] else "resultado"],
-        "Valor exato": formatar(r["exato"], 20),
-        "Valor aproximado": formatar(r["aprox"], 20),
-        "Ea": formatar_aprox(r["ea"], 6),
-        "Er": formatar_percentual(r["er"]),
-    }
+    if r.get("tipo_resultado") == "sequencial":
+        if r.get("base_usada") == r.get("termo_usado") and r["op"] == "+":
+            desc_op = f"Repetir {formatar(r['termo_usado'], 15)} {r['quantidade']}× (+)"
+        else:
+            desc_op = f"{formatar(r['base_usada'], 12)} {SIMBOLOS[r['op']]} {formatar(r['termo_usado'], 12)} ({r['quantidade']}×)"
+        linha = {
+            "#": st.session_state["contador"],
+            "Operação": desc_op,
+            "n": r["n"],
+            "Método": r["metodo"],
+            "Ajuste": TIPO_CURTO[r["tipo"]],
+            "Modo": "sequencial (" + ("operandos na máquina" if r["armazenar"] else "só resultados") + ")",
+            "Valor exato": formatar(r["exato"], 20),
+            "Valor aproximado": formatar(r["final"], 20),
+            "Ea": formatar_aprox(r["ea"], 6),
+            "Er": formatar_percentual(r["er"]),
+        }
+    else:
+        linha = {
+            "#": st.session_state["contador"],
+            "Operação": f"{formatar(r['x'], 20)} {SIMBOLOS[r['op']]} {formatar(r['y'], 20)}",
+            "n": r["n"],
+            "Método": r["metodo"],
+            "Ajuste": TIPO_CURTO[r["tipo"]],
+            "Modo": MODO_CURTO["entradas" if r["armazenar"] else "resultado"],
+            "Valor exato": formatar(r["exato"], 20),
+            "Valor aproximado": formatar(r["aprox"], 20),
+            "Ea": formatar_aprox(r["ea"], 6),
+            "Er": formatar_percentual(r["er"]),
+        }
     st.session_state["historico"] = (st.session_state["historico"] + [linha])[-MAX_LINHAS_HISTORICO:]
 
 
@@ -566,8 +638,73 @@ def montar_passo_a_passo(r):
     return "\n".join(linhas)
 
 
+def mostrar_resultado_sequencial(r):
+    """Apresenta o resultado de uma operação sequencial na calculadora livre."""
+    n = r["n"]
+    n_pad = n if r["tipo"] == "significativos" else None
+
+    st.success("✅ Operação sequencial concluída!")
+    st.caption(
+        f"Configuração usada: {r['quantidade']} repetições da operação {r['op']} · "
+        f"n = {n} · {r['metodo']} · {TIPO_CURTO[r['tipo']]} · "
+        f"{'operandos armazenados na máquina' if r['armazenar'] else 'apenas resultados intermediários ajustados'}"
+    )
+
+    # Métricas resumidas
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Valor exato final", formatar(r["exato"]))
+    c2.metric("Valor aproximado final", formatar(r["final"]))
+    c3.metric("Erro absoluto final (Ea)", formatar_aprox(r["ea"], 8))
+    c4.metric("Erro relativo final (Er)", formatar_percentual(r["er"]))
+
+    # Tabela comparativa padrão do projeto
+    st.markdown("#### Resumo do resultado final")
+    if r["er"] is None:
+        er_valor, er_notacao = "indefinido (valor aproximado = 0)", "—"
+    else:
+        er_valor = f"{formatar_aprox(r['er'], 8)}  ({formatar_percentual(r['er'])})"
+        er_notacao = notacao_normalizada(r["er"], sig_max=10)
+    mostrar_tabela([
+        {"Grandeza": "Valor exato final", "Valor": formatar(r["exato"]),
+         "Notação normalizada (0.d₁d₂… × 10ᵉ)": notacao_normalizada(r["exato"])},
+        {"Grandeza": "Valor aproximado final", "Valor": formatar(r["final"]),
+         "Notação normalizada (0.d₁d₂… × 10ᵉ)": notacao_normalizada(r["final"], n_pad)},
+        {"Grandeza": "Erro absoluto total Ea = |exato − aproximado|", "Valor": formatar_aprox(r["ea"], 10),
+         "Notação normalizada (0.d₁d₂… × 10ᵉ)": notacao_normalizada(r["ea"], sig_max=12)},
+        {"Grandeza": "Erro relativo total Er = Ea / |aproximado|", "Valor": er_valor,
+         "Notação normalizada (0.d₁d₂… × 10ᵉ)": er_notacao},
+    ])
+
+    # Tabela detalhada passo a passo
+    simb = SIMBOLOS[r["op"]]
+    linhas = [{
+        "Passo nº": p["passo"],
+        "Operação": f"{formatar(p['anterior'])} {simb} {formatar(p['termo'])}",
+        "Valor exato acumulado": formatar(p["exato_parcial"]),
+        "Resultado exato do passo": formatar(p["bruto"]),
+        "Após o ajuste (máquina)": formatar(p["apos"]),
+        "Erro absoluto acumulado": formatar_aprox(p["erro"], 6),
+    } for p in r["passos"]]
+
+    st.markdown("#### Evolução passo a passo")
+    mostrar_tabela(linhas)
+
+    # Gráfico do acúmulo de erro
+    if r["passos"]:
+        grafico = pd.DataFrame({
+            "Passo": [p["passo"] for p in r["passos"]],
+            "Erro absoluto acumulado": [float(p["erro"]) for p in r["passos"]]
+        })
+        st.line_chart(grafico.set_index("Passo"))
+        st.caption("Evolução da propagação do erro acumulado a cada iteração (gráfico ilustrativo).")
+
+
 def mostrar_resultado(r):
-    """Apresenta o resultado de um cálculo da calculadora livre."""
+    """Apresenta o resultado de um cálculo da calculadora livre (básica ou sequencial)."""
+    if r.get("tipo_resultado") == "sequencial":
+        mostrar_resultado_sequencial(r)
+        return
+
     n = r["n"]
     n_pad = n if r["tipo"] == "significativos" else None
 
@@ -615,6 +752,55 @@ def mostrar_resultado(r):
 
     with st.expander("🔍 Passo a passo do cálculo", expanded=True):
         st.markdown(montar_passo_a_passo(r))
+
+
+def processar_calculo_sequencial():
+    """Lê os campos da operação sequencial, valida e calcula."""
+    erros = []
+    termo = None
+    base = None
+
+    try:
+        termo = interpretar_numero(st.session_state["seq_termo_txt"], "Termo repetido")
+    except ErroSimulador as erro:
+        erros.append(str(erro))
+
+    if st.session_state["seq_modo_entrada"] == "base_e_termo":
+        try:
+            base = interpretar_numero(st.session_state["seq_base_txt"], "Valor inicial")
+        except ErroSimulador as erro:
+            erros.append(str(erro))
+    else:
+        base = None
+
+    if erros:
+        st.session_state["resultado"] = None
+        for mensagem in erros:
+            st.error("⚠️ " + mensagem)
+        return
+
+    try:
+        r = simular_operacao_sequencial(
+            valor_base=base,
+            termo=termo,
+            op=st.session_state["seq_op"],
+            quantidade=int(st.session_state["seq_qtd"]),
+            n=int(st.session_state["seq_n_dig"]),
+            metodo=st.session_state["seq_metodo"],
+            tipo=st.session_state["seq_tipo_ajuste"],
+            armazenar_operandos=bool(st.session_state["seq_armazenar"])
+        )
+    except ErroSimulador as erro:
+        st.session_state["resultado"] = None
+        st.error("⚠️ " + str(erro))
+        return
+    except Exception as erro:
+        st.session_state["resultado"] = None
+        st.error(f"⚠️ Erro inesperado ({type(erro).__name__}). Confira os valores e tente de novo.")
+        return
+
+    st.session_state["resultado"] = r
+    registrar_historico(r)
 
 
 def mostrar_historico():
@@ -877,39 +1063,94 @@ aba_calc, aba_demo, aba_ajuda = st.tabs(
 # ---------------------------------------------------------------------
 with aba_calc:
     st.subheader("Calculadora de precisão limitada")
-    st.write("Digite **X** e **Y** (ponto ou vírgula), escolha a operação, o número de dígitos **n** "
-             "e o método, e clique em **Calcular**.")
 
-    # O formulário só dispara o cálculo ao clicar em "Calcular" (ou apertar Enter),
-    # e todos os campos chegam juntos — evita bugs de digitação no celular.
-    with st.form("form_calculadora"):
-        col_x, col_op, col_y = st.columns([3, 2, 3])
-        col_x.text_input("Valor de X", key="x_txt", placeholder="ex.: 0.76545",
-                         help="Número com ponto ou vírgula decimal. Aceita notação científica, ex.: 1.5e-3.")
-        col_op.selectbox("Operação", list(OPERACOES), key="op", format_func=OPERACOES.get)
-        col_y.text_input("Valor de Y", key="y_txt", placeholder="ex.: 0.76541",
-                         help="Mesmas regras do X. Na divisão, Y não pode ser 0.")
+    modo_ui = st.radio(
+        "Modo de cálculo:",
+        ["Operação básica (X e Y)", "Operação sequencial repetida (n vezes)"],
+        index=0 if st.session_state["modo_calculadora"] == "basica" else 1,
+        horizontal=True,
+        help="Escolha entre realizar uma operação direta entre dois números ou repetir uma operação sequencialmente (como no Exemplo 3 do PDF)."
+    )
+    st.session_state["modo_calculadora"] = "basica" if modo_ui == "Operação básica (X e Y)" else "sequencial"
 
-        col_n, col_m = st.columns([1, 2])
-        col_n.number_input("Dígitos (n)", min_value=N_MIN, max_value=N_MAX, step=1, key="n_dig",
-                           help="Quantos dígitos a máquina guarda (veja 'tipo de ajuste' nas opções avançadas).")
-        col_m.radio("Método de ajuste", list(METODOS), key="metodo", format_func=METODOS.get)
+    if st.session_state["modo_calculadora"] == "basica":
+        st.write("Digite **X** e **Y** (ponto ou vírgula), escolha a operação, o número de dígitos **n** "
+                 "e o método, e clique em **Calcular**.")
 
-        with st.expander("⚙️ Opções avançadas: tipo de ajuste e modo de cálculo "
-                         "(padrão: dígitos significativos + entradas e resultado)"):
-            st.radio("O que o “n” conta?", list(TIPOS_AJUSTE), key="tipo_ajuste",
-                     format_func=TIPOS_AJUSTE.get)
-            st.radio("O que é ajustado?", list(MODOS_CALCULO), key="modo_calc",
-                     format_func=MODOS_CALCULO.get)
+        with st.form("form_calculadora_basica"):
+            col_x, col_op, col_y = st.columns([3, 2, 3])
+            col_x.text_input("Valor de X", key="x_txt", placeholder="ex.: 0.76545",
+                             help="Número com ponto ou vírgula decimal. Aceita notação científica, ex.: 1.5e-3.")
+            col_op.selectbox("Operação", list(OPERACOES), key="op", format_func=OPERACOES.get)
+            col_y.text_input("Valor de Y", key="y_txt", placeholder="ex.: 0.76541",
+                             help="Mesmas regras do X. Na divisão, Y não pode ser 0.")
 
-        calcular = st.form_submit_button("Calcular", type="primary")
+            col_n, col_m = st.columns([1, 2])
+            col_n.number_input("Dígitos (n)", min_value=N_MIN, max_value=N_MAX, step=1, key="n_dig",
+                               help="Quantos dígitos a máquina guarda (veja 'tipo de ajuste' nas opções avançadas).")
+            col_m.radio("Método de ajuste", list(METODOS), key="metodo", format_func=METODOS.get)
 
-    if calcular:
-        processar_calculo()
+            with st.expander("⚙️ Opções avançadas: tipo de ajuste e modo de cálculo "
+                             "(padrão: dígitos significativos + entradas e resultado)"):
+                st.radio("O que o “n” conta?", list(TIPOS_AJUSTE), key="tipo_ajuste",
+                         format_func=TIPOS_AJUSTE.get)
+                st.radio("O que é ajustado?", list(MODOS_CALCULO), key="modo_calc",
+                         format_func=MODOS_CALCULO.get)
+
+            calcular = st.form_submit_button("Calcular", type="primary")
+
+        if calcular:
+            processar_calculo()
+
+    else:
+        st.write("Realize uma operação repetida **k vezes** com ajuste a cada passo para observar o "
+                 "acúmulo e propagação de erros numéricos.")
+
+        with st.form("form_calculadora_sequencial"):
+            col_m_ent = st.radio(
+                "Estrutura da operação repetida:",
+                ["Somar/operar o mesmo termo k vezes (ex.: 0.56786 dez vezes)",
+                 "Partir de um valor inicial e aplicar a operação k vezes com o termo"],
+                index=0 if st.session_state["seq_modo_entrada"] == "parcela_pura" else 1,
+                horizontal=True
+            )
+            st.session_state["seq_modo_entrada"] = (
+                "parcela_pura" if col_m_ent.startswith("Somar/operar") else "base_e_termo"
+            )
+
+            if st.session_state["seq_modo_entrada"] == "base_e_termo":
+                col_b, col_op_s, col_t, col_q = st.columns([3, 2, 3, 2])
+                col_b.text_input("Valor inicial", key="seq_base_txt", placeholder="ex.: 10.0",
+                                 help="Valor a partir do qual a sequência de operações começará.")
+            else:
+                col_op_s, col_t, col_q = st.columns([2, 4, 2])
+
+            col_op_s.selectbox("Operação", list(OPERACOES), key="seq_op", format_func=OPERACOES.get)
+            col_t.text_input("Termo repetido", key="seq_termo_txt", placeholder="ex.: 0.56786",
+                             help="Valor que será operado repetidamente a cada iteração.")
+            col_q.number_input("Repetições (k)", min_value=2, max_value=100, step=1, key="seq_qtd",
+                               help="Quantidade de termos ou vezes que a operação será executada.")
+
+            col_n_s, col_m_s = st.columns([1, 2])
+            col_n_s.number_input("Dígitos (n)", min_value=N_MIN, max_value=N_MAX, step=1, key="seq_n_dig",
+                                 help="Quantos dígitos a máquina mantém.")
+            col_m_s.radio("Método de ajuste", list(METODOS), key="seq_metodo", format_func=METODOS.get)
+
+            with st.expander("⚙️ Opções avançadas para a operação sequencial"):
+                st.radio("O que o “n” conta?", list(TIPOS_AJUSTE), key="seq_tipo_ajuste",
+                         format_func=TIPOS_AJUSTE.get)
+                st.checkbox("Guardar também o termo com n dígitos na máquina antes de operar",
+                            key="seq_armazenar",
+                            help="Se marcado, o termo é arredondado/truncado antes de entrar nas operações.")
+
+            calcular_seq = st.form_submit_button("Calcular Operação Sequencial", type="primary")
+
+        if calcular_seq:
+            processar_calculo_sequencial()
 
     if st.session_state["resultado"] is not None:
         mostrar_resultado(st.session_state["resultado"])
-    elif not calcular:
+    elif not (calcular if st.session_state["modo_calculadora"] == "basica" else calcular_seq):
         st.info("👆 Preencha os campos e clique em **Calcular** para ver o resultado.")
 
     # --- Ações: novo cálculo / limpar histórico / sair (instrução 4 do enunciado) ---
